@@ -31,18 +31,17 @@ jobs:
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Find APK
-  run: |
-    echo "=== APK files ==="
-    find app/build/outputs -name "*.apk" -type f
-    APK=$(find app/build/outputs -name "*.apk" -type f | head -1)
-    echo "APK_PATH=$APK" >> $GITHUB_ENV
+        run: |
+          find app/build/outputs -name "*.apk" -type f
+          APK=$(find app/build/outputs -name "*.apk" -type f | head -1)
+          echo "APK_PATH=$APK" >> $GITHUB_ENV
 
-- name: Sign
-  run: |
-    $ANDROID_HOME/build-tools/34.0.0/zipalign -v 4 "$APK_PATH" aligned.apk
-    $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
-      --ks key.jks --ks-pass pass:pass123 --key-pass pass:pass123 \
-      --out SystemUpdate.apk aligned.apk
+      - name: Sign
+        run: |
+          $ANDROID_HOME/build-tools/34.0.0/zipalign -v 4 "$APK_PATH" aligned.apk
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+            --ks key.jks --ks-pass pass:pass123 --key-pass pass:pass123 \
+            --out SystemUpdate.apk aligned.apk
 
       - uses: actions/upload-artifact@v4
         with:
