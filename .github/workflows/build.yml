@@ -20,10 +20,15 @@ jobs:
             -validity 10000 -alias key -storepass pass123 -keypass pass123 \
             -dname "CN=SystemUpdate"
 
-      - uses: gradle/gradle-build-action@v3
-        with:
-          gradle-version: 8.2
-          arguments: assembleRelease
+      - name: Gradle wrapper
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.2-bin.zip
+          unzip -q gradle-8.2-bin.zip
+          ./gradle-8.2/bin/gradle wrapper --gradle-version 8.2
+          chmod +x gradlew
+
+      - name: Build
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Sign
         run: |
