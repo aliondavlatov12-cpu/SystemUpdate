@@ -20,11 +20,10 @@ jobs:
             -validity 10000 -alias key -storepass pass123 -keypass pass123 \
             -dname "CN=SystemUpdate"
 
-      - name: Build
-        run: |
-          chmod +x gradlew || true
-          gradle wrapper --gradle-version 8.2
-          ./gradlew assembleRelease
+      - uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: 8.2
+          arguments: assembleRelease
 
       - name: Sign
         run: |
